@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="MIDI Note Picker">
+  <category name="MIDI">
+    <reapack name="midi_note_picker.jsfx" type="effect" desc="MIDI Note Picker">
+      <metadata>
+        <link rel="website">https://github.com/haugerglenn06-maker/midi-note-picker</link>
+      </metadata>
+      <version name="1.0" author="Glenn Hauger" time="2026-11-23T12:00:00Z">
+        <changelog><![CDATA[Initial release]]></changelog>
+        <source>https://raw.githubusercontent.com/haugerglenn06-maker/midi-note-picker/main/MIDI/midi_note_picker.jsfx</source>
+      </version>
+    </reapack>
+  </category>
+</index>

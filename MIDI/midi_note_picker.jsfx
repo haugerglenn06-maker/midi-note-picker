@@ -1,0 +1,419 @@
+desc:MIDI Note Picker
+// @description MIDI Note Picker – pick exactly which MIDI notes pass, on a piano keyboard
+// @author Glenn Hauger
+// @version 1.0
+// @changelog Initial release
+// @link Repository https://github.com/haugerglenn06-maker/midi-note-picker
+// @about
+//   # MIDI Note Picker
+//
+//   Pick exactly which MIDI notes are allowed through by clicking keys on a
+//   piano keyboard. Only the selected notes pass – nothing in between, unlike
+//   range-based note filters. Ideal for splitting a drum kit into one track per
+//   drum (kick, snare, hi-hat ...).
+//
+//   Features:
+//   - Clickable 5-octave piano keyboard (click or drag to select notes)
+//   - Overview strip of all 128 notes, octave buttons
+//   - Built-in General MIDI drum and percussion presets (Kick, Snare, Hi-hat, Toms, Cymbals ...)
+//   - Learn mode: select notes by playing them on your keyboard
+//   - Follows your MIDI keyboard's octave changes, with calibration for any controller size
+//   - Shows incoming notes and the GM drum name for each key
+//   - Optional MIDI channel filter and pass-through of other MIDI (CC, pitch bend ...)
+//   - No stuck notes: note-offs always pass when their note-on did
+//   - Selection is saved with the project and in FX presets
+//
+//   Tip: use it as track input FX so only the selected notes are recorded.
+//
+// Contact: GitHub Issues – https://github.com/haugerglenn06-maker/midi-note-picker/issues
+// License: MIT – Copyright (c) 2026 Glenn Hauger
+
+slider1:0<0,16,1{All,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>-Channel
+slider2:1<0,1,1{No,Yes}>-Other MIDI (CC, pitch, program)
+slider3:0<0,1,1{C4 = 60,C3 = 60}>-Octave naming
+slider4:0<0,1,1{Off,On}>-Learn mode
+slider5:3<0,7,1{Off,25,32,37,49,61,76,88}>-Controller (number of keys)
+slider6:48<0,127,1>-Controller lowest note at octave 0
+slider7:1<0,1,1{Off,On}>-Follow controller octave
+
+@init
+ext_noinit = 1;
+sel  = 0;      // 128 slots: 1 = selected
+act  = 128;    // 128 slots: activity indicator
+held = 256;    // 16*128 slots: notes passed through and currently held
+memset(held, 0, 2048);
+gfx_clear = 0x1E1E1E;
+lastl = 0; lastr = 0; painting = 0; lastpaint = -1;
+kstart = 24;   // first note shown on the keyboard (C1 = 24 with C4 = 60)
+lastin = -1; lastvel = 0; inlo = 128; inhi = -1; calib = 0; calres = -1;
+cshift = 0; viewpend = 0; viewnote = -1;
+
+strcpy(100,"C");  strcpy(101,"C#"); strcpy(102,"D");  strcpy(103,"D#");
+strcpy(104,"E");  strcpy(105,"F");  strcpy(106,"F#"); strcpy(107,"G");
+strcpy(108,"G#"); strcpy(109,"A");  strcpy(110,"A#"); strcpy(111,"B");
+
+// General MIDI drum sounds (notes 35-81)
+strcpy(235,"Acoustic Bass Drum"); strcpy(236,"Bass Drum 1 (Kick)"); strcpy(237,"Side Stick (Rim)");
+strcpy(238,"Acoustic Snare");     strcpy(239,"Hand Clap");          strcpy(240,"Electric Snare");
+strcpy(241,"Low Floor Tom");      strcpy(242,"Closed Hi-Hat");      strcpy(243,"High Floor Tom");
+strcpy(244,"Pedal Hi-Hat");       strcpy(245,"Low Tom");            strcpy(246,"Open Hi-Hat");
+strcpy(247,"Low-Mid Tom");        strcpy(248,"Hi-Mid Tom");         strcpy(249,"Crash Cymbal 1");
+strcpy(250,"High Tom");           strcpy(251,"Ride Cymbal 1");      strcpy(252,"Chinese Cymbal");
+strcpy(253,"Ride Bell");          strcpy(254,"Tambourine");         strcpy(255,"Splash Cymbal");
+strcpy(256,"Cowbell");            strcpy(257,"Crash Cymbal 2");     strcpy(258,"Vibraslap");
+strcpy(259,"Ride Cymbal 2");      strcpy(260,"Hi Bongo");           strcpy(261,"Low Bongo");
+strcpy(262,"Mute Hi Conga");      strcpy(263,"Open Hi Conga");      strcpy(264,"Low Conga");
+strcpy(265,"High Timbale");       strcpy(266,"Low Timbale");        strcpy(267,"High Agogo");
+strcpy(268,"Low Agogo");          strcpy(269,"Cabasa");             strcpy(270,"Maracas");
+strcpy(271,"Short Whistle");      strcpy(272,"Long Whistle");       strcpy(273,"Short Guiro");
+strcpy(274,"Long Guiro");         strcpy(275,"Claves");             strcpy(276,"Hi Wood Block");
+strcpy(277,"Low Wood Block");     strcpy(278,"Mute Cuica");         strcpy(279,"Open Cuica");
+strcpy(280,"Mute Triangle");      strcpy(281,"Open Triangle");
+
+function setc(r,g,b) ( gfx_r = r; gfx_g = g; gfx_b = b; gfx_a = 1; );
+
+function notename(n) local(o) (
+  o = floor(n / 12) - (slider3 >= 0.5 ? 2 : 1);
+  sprintf(#nn, "%s%d", 100 + (n % 12), o);
+  #nn;
+);
+
+function btn(x, y, w, h, label, on) local(hv, tw, th) (
+  hv = mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h;
+  on ? setc(0.95,0.55,0.15) : hv ? setc(0.38,0.38,0.42) : setc(0.27,0.27,0.30);
+  gfx_rect(x, y, w, h);
+  on ? setc(0.08,0.08,0.08) : setc(0.92,0.92,0.92);
+  gfx_measurestr(label, tw, th);
+  gfx_x = x + (w - tw) * 0.5; gfx_y = y + (h - th) * 0.5;
+  gfx_drawstr(label);
+  hv;
+);
+
+function clearsel() ( memset(sel, 0, 128); );
+function grpstart() ( !(mouse_cap & 8) ? clearsel(); );
+function changed()  ( sliderchange(-1); );
+
+function keycount() (
+  slider5 == 1 ? 25 : slider5 == 2 ? 32 : slider5 == 3 ? 37 : slider5 == 4 ? 49 :
+  slider5 == 5 ? 61 : slider5 == 6 ? 76 : slider5 == 7 ? 88 : 0;
+);
+
+function on(n) ( sel[n] = 1; );
+function onrange(a, b) local(k) ( k = a; while (k <= b) ( sel[k] = 1; k += 1; ); );
+
+// Built-in presets (index = position in menu)
+function applypreset(k, add) (
+  !add ? clearsel();
+  k == 1  ? on(36) :
+  k == 2  ? ( on(35); on(36); ) :
+  k == 3  ? on(37) :
+  k == 4  ? on(38) :
+  k == 5  ? ( on(38); on(40); ) :
+  k == 6  ? ( on(37); on(38); ) :
+  k == 7  ? ( on(42); on(44); on(46); ) :
+  k == 8  ? on(42) :
+  k == 9  ? on(46) :
+  k == 10 ? on(45) :
+  k == 11 ? on(47) :
+  k == 12 ? on(50) :
+  k == 13 ? ( on(41); on(43); ) :
+  k == 14 ? ( on(41); on(43); on(45); on(47); on(48); on(50); ) :
+  k == 15 ? ( on(49); on(57); ) :
+  k == 16 ? ( on(51); on(53); on(59); ) :
+  k == 17 ? ( on(49); on(51); on(52); on(53); on(55); on(57); on(59); ) :
+  k == 18 ? onrange(35, 59) :
+  k == 19 ? ( on(54); on(69); on(70); ) :
+  k == 20 ? onrange(60, 64) :
+  k == 21 ? ( on(58); on(75); on(80); on(81); ) :
+  k == 22 ? ( on(54); on(56); on(58); onrange(60, 64); on(69); on(70); on(75); on(80); on(81); ) :
+  k == 23 ? onrange(35, 81) :
+  k == 24 ? clearsel();
+  changed();
+);
+
+@serialize
+file_mem(0, sel, 128);
+
+@block
+while (midirecv(offset, msg1, msg2, msg3)) (
+  status = msg1 & 0xF0;
+  ch = msg1 & 0x0F;
+  chok = (slider1 == 0) || (ch == slider1 - 1);
+
+  status == 0x90 && msg3 > 0 ? (
+    // Note on
+    act[msg2] = 30;
+    lastin = msg2; lastvel = msg3;
+    msg2 < inlo ? inlo = msg2; msg2 > inhi ? inhi = msg2;
+    calib ? ( calres = msg2; calib = 0; cshift = 0; );
+    // Follow controller octave: work out which octave shift the note must come from
+    slider7 >= 0.5 ? (
+      nkb = keycount();
+      nkb > 0 ? (
+        clo = slider6 + 12 * cshift; chi = clo + nkb - 1;
+        msg2 < clo ? ( cshift = floor((msg2 - slider6) / 12); viewpend = 1; );
+        msg2 > chi ? ( cshift = ceil((msg2 - slider6 - nkb + 1) / 12); viewpend = 1; );
+      ) : ( viewnote = msg2; viewpend = 1; );
+    );
+    slider4 >= 0.5 ? sel[msg2] = !sel[msg2];
+    (chok && sel[msg2]) ? (
+      midisend(offset, msg1, msg2, msg3);
+      held[ch * 128 + msg2] = 1;
+    );
+  ) : (status == 0x80 || status == 0x90) ? (
+    // Note off (passes only if the matching note on passed -> no stuck notes)
+    idx = ch * 128 + msg2;
+    held[idx] ? ( midisend(offset, msg1, msg2, msg3); held[idx] = 0; );
+  ) : status == 0xA0 ? (
+    // Polyphonic aftertouch follows the note selection
+    (chok && sel[msg2]) ? midisend(offset, msg1, msg2, msg3);
+  ) : (status == 0xB0 && (msg2 == 120 || msg2 == 123)) ? (
+    // All sound off / All notes off always pass
+    midisend(offset, msg1, msg2, msg3);
+    memset(held + ch * 128, 0, 128);
+  ) : (
+    // Other MIDI (CC, pitch bend, program change, clock ...)
+    (slider2 >= 0.5 && (msg1 >= 0xF0 || chok)) ? midisend(offset, msg1, msg2, msg3);
+  );
+);
+
+@gfx 780 520
+gfx_setfont(1, "Arial", 14);
+lmb = mouse_cap & 1; rmb = mouse_cap & 2;
+clickL = lmb && !lastl; clickR = rmb && !lastr;
+
+// --- Row 1: buttons ---
+bx = 10; by = 8; bh = 26;
+btn(bx,by,70,bh,"Clear",0) && clickL ? ( clearsel(); changed(); ); bx += 76;
+btn(bx,by,60,bh,"All",0) && clickL ? ( i = 0; loop(128, sel[i] = 1; i += 1); changed(); ); bx += 66;
+btn(bx,by,86,bh,"Invert",0) && clickL ? ( i = 0; loop(128, sel[i] = !sel[i]; i += 1); changed(); ); bx += 100;
+btn(bx,by,56,bh,"Kick",0) && clickL ? ( grpstart(); sel[35] = 1; sel[36] = 1; changed(); ); bx += 62;
+btn(bx,by,50,bh,"Rim",0) && clickL ? ( grpstart(); sel[37] = 1; changed(); ); bx += 56;
+btn(bx,by,60,bh,"Snare",0) && clickL ? ( grpstart(); sel[38] = 1; sel[40] = 1; changed(); ); bx += 66;
+btn(bx,by,60,bh,"Hihat",0) && clickL ? ( grpstart(); sel[42] = 1; sel[44] = 1; sel[46] = 1; changed(); ); bx += 66;
+btn(bx,by,56,bh,"Toms",0) && clickL ? ( grpstart(); sel[41] = 1; sel[43] = 1; sel[45] = 1; sel[47] = 1; sel[48] = 1; sel[50] = 1; changed(); ); bx += 62;
+btn(bx,by,84,bh,"Cymbals",0) && clickL ? ( grpstart(); sel[49] = 1; sel[51] = 1; sel[52] = 1; sel[53] = 1; sel[55] = 1; sel[57] = 1; sel[59] = 1; changed(); ); bx += 90;
+btn(bx,by,46,bh,"Learn",slider4 >= 0.5) && clickL ? ( slider4 = slider4 >= 0.5 ? 0 : 1; sliderchange(slider4); );
+
+// --- Row 2: settings ---
+slider1 == 0 ? strcpy(#chl, "Channel: All") : sprintf(#chl, "Channel: %d", slider1);
+btn(10,40,120,24,#chl,0) ? (
+  clickL ? ( slider1 = slider1 >= 16 ? 0 : slider1 + 1; sliderchange(slider1); );
+  clickR ? ( slider1 = slider1 <= 0 ? 16 : slider1 - 1; sliderchange(slider1); );
+);
+strcpy(#oth, slider2 >= 0.5 ? "Other MIDI: Yes" : "Other MIDI: No");
+btn(136,40,150,24,#oth,0) && clickL ? ( slider2 = slider2 >= 0.5 ? 0 : 1; sliderchange(slider2); );
+strcpy(#oct, slider3 >= 0.5 ? "Octave: C3 = 60" : "Octave: C4 = 60");
+btn(292,40,140,24,#oct,0) && clickL ? ( slider3 = slider3 >= 0.5 ? 0 : 1; sliderchange(slider3); );
+btn(440,40,200,24,"Presets...",0) && clickL ? (
+  addmode = mouse_cap & 8;
+  gfx_x = 440; gfx_y = 64;
+  strcpy(#menu, "Drums: Kick (36)");
+  strcat(#menu, "|Drums: Kick + Acoustic Bass Drum (35, 36)");
+  strcat(#menu, "|Drums: Rim (37)");
+  strcat(#menu, "|Drums: Snare (38)");
+  strcat(#menu, "|Drums: Snare + Electric Snare (38, 40)");
+  strcat(#menu, "|Drums: Snare + Rim (37, 38)");
+  strcat(#menu, "|Hi-hat: complete, choked (42, 44, 46)");
+  strcat(#menu, "|Hi-hat: closed (42)");
+  strcat(#menu, "|Hi-hat: open (46)");
+  strcat(#menu, "|Toms: Low tom (45)");
+  strcat(#menu, "|Toms: Mid tom (47)");
+  strcat(#menu, "|Toms: High tom (50)");
+  strcat(#menu, "|Toms: Floor toms (41, 43)");
+  strcat(#menu, "|Toms: all (41, 43, 45, 47, 48, 50)");
+  strcat(#menu, "|Cymbals: Crash (49, 57)");
+  strcat(#menu, "|Cymbals: Ride (51, 53, 59)");
+  strcat(#menu, "|Cymbals: all (49, 51, 52, 53, 55, 57, 59)");
+  strcat(#menu, "|Full drum kit (35-59)");
+  strcat(#menu, "|Percussion: Shaker + tambourine (54, 69, 70)");
+  strcat(#menu, "|Percussion: Congas + bongos (60-64)");
+  strcat(#menu, "|Percussion: Claves + effects (58, 75, 80, 81)");
+  strcat(#menu, "|Percussion: reggae set (54, 56, 58, 60-64, 69, 70, 75, 80, 81)");
+  strcat(#menu, "|All GM percussion (35-81)");
+  strcat(#menu, "|None (clear)");
+  choice = gfx_showmenu(#menu);
+  choice > 0 ? applypreset(choice, addmode);
+);
+
+
+// --- Selection range ---
+cnt = 0; lowsel = 128; highsel = -1; i = 0;
+loop(128, sel[i] ? ( cnt += 1; i < lowsel ? lowsel = i; i > highsel ? highsel = i; ); i += 1; );
+
+hovered = -1;
+
+// --- Octave buttons for the keyboard (5 octaves visible at a time) ---
+NKEYS = 60;
+btn(10,72,90,22,"< Octave",0) && clickL ? kstart = max(0, kstart - 12);
+btn(106,72,90,22,"Octave >",0) && clickL ? kstart = min(127 - NKEYS + 1, kstart + 12);
+btn(202,72,100,22,slider7 >= 0.5 ? "Follow: On" : "Follow: Off", slider7 >= 0.5) && clickL ? ( slider7 = slider7 >= 0.5 ? 0 : 1; sliderchange(slider7); );
+
+// Controller's current position (estimated from incoming notes)
+nkb = keycount();
+clo = slider6 + 12 * cshift; chi = clo + nkb - 1;
+viewpend ? (
+  nkb > 0 ? (
+    kstart = floor(clo / 12) * 12 - 12;
+    chi > kstart + NKEYS - 1 ? kstart = chi - NKEYS + 1;
+  ) : viewnote >= 0 ? (
+    (viewnote < kstart || viewnote > kstart + NKEYS - 1) ? kstart = floor(viewnote / 12) * 12 - 24;
+  );
+  kstart = max(0, min(127 - NKEYS + 1, kstart));
+  viewpend = 0;
+);
+kend = min(127, kstart + NKEYS - 1);
+strcpy(#v1, notename(kstart)); strcpy(#v2, notename(kend));
+sprintf(#vr, "Showing %s-%s (%d-%d)", #v1, #v2, kstart, kend);
+setc(0.6,0.6,0.6); gfx_x = 312; gfx_y = 76; gfx_drawstr(#vr);
+gfx_setfont(2, "Arial", 11); setc(0.6,0.6,0.6); gfx_x = 500; gfx_y = 78; gfx_drawstr("orange = selected   green = playing   blue = controller"); gfx_setfont(1);
+
+// --- Piano keyboard ---
+ky = 100; kh = 150; bh2 = 92;
+nw = 0; n = kstart;
+loop(kend - kstart + 1, c = n % 12; !(c == 1 || c == 3 || c == 6 || c == 8 || c == 10) ? nw += 1; n += 1; );
+kx0 = 10; ww = floor(760 / nw); bw = floor(ww * 0.62);
+
+// white keys
+wi = 0; n = kstart;
+loop(kend - kstart + 1,
+  c = n % 12;
+  !(c == 1 || c == 3 || c == 6 || c == 8 || c == 10) ? (
+    x = kx0 + wi * ww;
+    sel[n] ? setc(0.95,0.55,0.15) : setc(0.90,0.90,0.88);
+    gfx_rect(x, ky, ww - 1, kh);
+    act[n] > 0 ? ( setc(0.20,0.85,0.35); gfx_rect(x, ky + kh - 7, ww - 1, 7); );
+    gfx_setfont(2, "Arial", 10);
+    sel[n] ? ( setc(0.1,0.1,0.1); sprintf(#kl, "%d", n);
+               gfx_measurestr(#kl, tw, th); gfx_x = x + (ww - 1 - tw) * 0.5; gfx_y = ky + kh - th - 24; gfx_drawstr(#kl); );
+    c == 0 ? ( setc(0.35,0.35,0.35); strcpy(#kl, notename(n));
+               gfx_measurestr(#kl, tw, th); gfx_x = x + (ww - 1 - tw) * 0.5; gfx_y = ky + kh - th - 10; gfx_drawstr(#kl); );
+    gfx_setfont(1);
+    (mouse_x >= x && mouse_x < x + ww - 1 && mouse_y >= ky && mouse_y < ky + kh) ? hovered = n;
+    wi += 1;
+  );
+  n += 1;
+);
+// black keys (on top of the white ones)
+wi = 0; n = kstart; bhov = -1;
+loop(kend - kstart + 1,
+  c = n % 12;
+  (c == 1 || c == 3 || c == 6 || c == 8 || c == 10) ? (
+    x = kx0 + wi * ww - bw * 0.5;
+    sel[n] ? setc(0.88,0.45,0.10) : setc(0.10,0.10,0.11);
+    gfx_rect(x, ky, bw, bh2);
+    act[n] > 0 ? ( setc(0.20,0.85,0.35); gfx_rect(x, ky + bh2 - 6, bw, 6); );
+    sel[n] ? ( gfx_setfont(2, "Arial", 10); setc(1,1,1); sprintf(#kl, "%d", n); gfx_measurestr(#kl, tw, th);
+               gfx_x = x + (bw - tw) * 0.5; gfx_y = ky + bh2 - th - 10; gfx_drawstr(#kl); gfx_setfont(1); );
+    (mouse_x >= x && mouse_x < x + bw && mouse_y >= ky && mouse_y < ky + bh2) ? bhov = n;
+  ) : wi += 1;
+  n += 1;
+);
+bhov >= 0 ? hovered = bhov;
+// blue strip: keys currently covered by the controller
+nkb > 0 ? (
+  wi = 0; n = kstart;
+  loop(kend - kstart + 1,
+    c = n % 12; isb = (c == 1 || c == 3 || c == 6 || c == 8 || c == 10);
+    (n >= clo && n <= chi) ? (
+      setc(0.35,0.65,1.0);
+      isb ? gfx_rect(kx0 + wi * ww - bw * 0.5, ky - 6, bw, 4) : gfx_rect(kx0 + wi * ww, ky - 6, ww, 4);
+    );
+    !isb ? wi += 1;
+    n += 1;
+  );
+);
+
+// --- Overview of all 128 notes (shows selections outside the keyboard) ---
+oy = ky + kh + 10; ow = 760 / 128;
+setc(0.22,0.22,0.24); gfx_rect(10, oy, 760, 14);
+setc(0.45,0.45,0.50); gfx_rect(10 + kstart * ow, oy, (kend - kstart + 1) * ow, 14);
+i = 0; loop(128, sel[i] ? ( setc(0.95,0.55,0.15); gfx_rect(10 + i * ow, oy, max(2, ow), 14); ); i += 1; );
+(clickL && mouse_y >= oy && mouse_y < oy + 14 && mouse_x >= 10 && mouse_x < 770) ? (
+  kstart = floor(((mouse_x - 10) / ow) / 12) * 12; kstart = min(127 - NKEYS + 1, kstart);
+);
+
+// --- Mouse painting ---
+clickL && hovered >= 0 ? ( painting = 1; paintval = !sel[hovered]; lastpaint = -1; );
+painting && lmb && hovered >= 0 && hovered != lastpaint ? ( sel[hovered] = paintval; lastpaint = hovered; );
+painting && !lmb ? ( painting = 0; changed(); );
+
+i = 0; loop(128, act[i] > 0 ? act[i] -= 1; i += 1; );
+
+// --- Info text ---
+iy = oy + 24;
+hovered >= 0 ? (
+  sprintf(#info, "Note %d   %s   %s", hovered, notename(hovered), sel[hovered] ? "SELECTED" : "not selected");
+  hovered >= 35 && hovered <= 81 ? ( sprintf(#g, "   GM: %s", 200 + hovered); strcat(#info, #g); );
+) : strcpy(#info, "Hover over a key for info. Click the overview strip to jump.");
+setc(0.85,0.85,0.85); gfx_x = 10; gfx_y = iy; gfx_drawstr(#info);
+
+// --- Controller: setting, calibration and suggestion (dynamic) ---
+calres >= 0 ? ( slider6 = calres; sliderchange(slider6); calres = -1; );
+nk = slider5 == 1 ? 25 : slider5 == 2 ? 32 : slider5 == 3 ? 37 : slider5 == 4 ? 49 : slider5 == 5 ? 61 : slider5 == 6 ? 76 : slider5 == 7 ? 88 : 0;
+nk == 0 ? strcpy(#kb, "Controller: off") : sprintf(#kb, "Controller: %d keys", nk);
+btn(10, iy + 20, 170, 22, #kb, 0) ? (
+  clickL ? ( slider5 = slider5 >= 7 ? 0 : slider5 + 1; sliderchange(slider5); );
+  clickR ? ( slider5 = slider5 <= 0 ? 7 : slider5 - 1; sliderchange(slider5); );
+);
+btn(186, iy + 20, 100, 22, calib ? "Press key" : "Calibrate", calib) && clickL ? calib = !calib;
+calib ? (
+  setc(0.30,0.95,0.45); gfx_x = 296; gfx_y = iy + 24;
+  gfx_drawstr("Set your controller to octave 0 and press its LOWEST key.");
+) : nk > 0 ? (
+  base = slider6;
+  strcpy(#bn, notename(base));
+  cnt > 0 ? (
+    shift = floor((lowsel - base) / 12); shift < -6 ? shift = -6; shift > 6 ? shift = 6;
+    mlo = base + 12 * shift; mhi = mlo + nk - 1;
+    strcpy(#ml, notename(mlo)); strcpy(#mh, notename(mhi));
+    sprintf(#mpk, "Best: octave %s%d (%s-%s)", shift > 0 ? "+" : "", shift, #ml, #mh);
+    highsel > mhi ? strcat(#mpk, " – does not fit");
+  ) : sprintf(#mpk, "Octave 0 starts at %s (%d).", #bn, base);
+  strcpy(#cl1, notename(clo)); strcpy(#cl2, notename(chi));
+  sprintf(#cur, "   Now: octave %s%d (%s-%s)", cshift > 0 ? "+" : "", cshift, #cl1, #cl2);
+  strcat(#mpk, #cur);
+  setc(0.55,0.75,0.95); gfx_x = 296; gfx_y = iy + 24; gfx_drawstr(#mpk);
+) : (
+  setc(0.6,0.6,0.6); gfx_x = 296; gfx_y = iy + 24; gfx_drawstr("No suggestion (controller off).");
+);
+
+// --- Incoming MIDI (any source: controller, virtual keyboard, other MIDI) ---
+btn(10, iy + 46, 100, 22, "Reset", 0) && clickL ? ( lastin = -1; inlo = 128; inhi = -1; );
+lastin >= 0 ? (
+  strcpy(#li, notename(lastin));
+  sprintf(#inc, "Last incoming: %s (%d) vel %d", #li, lastin, lastvel);
+  inhi >= 0 ? ( strcpy(#lo, notename(inlo)); strcpy(#hi, notename(inhi));
+                sprintf(#rng, "   Played range: %s-%s (notes %d-%d)", #lo, #hi, inlo, inhi); strcat(#inc, #rng); );
+) : strcpy(#inc, "No incoming notes yet – play your controller or the virtual keyboard.");
+setc(0.85,0.85,0.85); gfx_x = 120; gfx_y = iy + 50; gfx_drawstr(#inc);
+
+(cnt == 0 && slider4 < 0.5) ? ( setc(0.95,0.55,0.15); gfx_x = 10; gfx_y = iy + 74; gfx_drawstr("No notes selected – all notes are blocked."); );
+
+slider4 >= 0.5 ? (
+  setc(0.30,0.95,0.45); gfx_x = 10; gfx_y = iy + 74;
+  gfx_drawstr("LEARN MODE: play keys on your controller to select/deselect them.");
+) : cnt > 0 ? (
+  setc(0.6,0.6,0.6); gfx_x = 10; gfx_y = iy + 74;
+  gfx_drawstr("Click/drag = select   Shift+group/preset = add   Right-click = step back");
+);
+
+// --- List: key -> sound ---
+ly = iy + 98; col = 0; row = 0; shown = 0; i = 0;
+gfx_setfont(2, "Arial", 12);
+loop(128,
+  sel[i] ? (
+    shown < 15 ? (
+      strcpy(#a, notename(i));
+      i >= 35 && i <= 81 ? sprintf(#e, "%s (%d)  %s", #a, i, 200 + i) : sprintf(#e, "%s (%d)", #a, i);
+      setc(0.95,0.75,0.45); gfx_x = 10 + col * 255; gfx_y = ly + row * 18; gfx_drawstr(#e);
+      col += 1; col >= 3 ? ( col = 0; row += 1; );
+    );
+    shown += 1;
+  );
+  i += 1;
+);
+shown > 15 ? ( sprintf(#e, "... and %d more", shown - 15); setc(0.6,0.6,0.6); gfx_x = 10; gfx_y = ly + 5 * 18; gfx_drawstr(#e); );
+gfx_setfont(1);
+
+lastl = lmb; lastr = rmb;
