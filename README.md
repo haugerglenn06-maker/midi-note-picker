@@ -7,6 +7,8 @@ between, unlike range-based note filters.
 Perfect for splitting a drum kit into one track per drum: choose 36 for the kick,
 or 42 + 44 + 46 for a hi-hat track where closed and open hats choke each other.
 
+![MIDI Note Picker user interface](images/midi-note-picker.png)
+
 ## Features
 - Clickable 5-octave piano keyboard – click or drag to select notes
 - Overview strip of all 128 notes and octave buttons
@@ -27,8 +29,12 @@ or 42 + 44 + 46 for a hi-hat track where closed and open hats choke each other.
 3. **Extensions → ReaPack → Browse packages**, search for *MIDI Note Picker* and install.
 
 ## Manual installation
-Copy `MIDI/midi_note_picker.jsfx` to your REAPER `Effects` folder
-(Linux: `~/.config/REAPER/Effects/`), then press F5 in the FX browser.
+Copy `MIDI/midi_note_picker.jsfx` to your REAPER `Effects` folder, then press F5 in the FX browser.
+The easiest way to find the folder is **Options → Show REAPER resource path…** in REAPER.
+
+- Windows: `%APPDATA%\REAPER\Effects\`
+- macOS: `~/Library/Application Support/REAPER/Effects/`
+- Linux: `~/.config/REAPER/Effects/`
 
 ## Tip
 Use it as **track input FX** so only the selected notes are recorded on each track.
